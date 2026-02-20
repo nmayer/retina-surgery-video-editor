@@ -1,0 +1,442 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Surgery Video Editor</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  background: #111; color: #ddd;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  height: 100vh; display: flex; flex-direction: column; overflow: hidden;
+  user-select: none;
+}
+
+/* ── Header ─────────────────────────────────────────────── */
+header {
+  padding: 10px 20px; background: #1a1a1a;
+  display: flex; justify-content: space-between; align-items: center;
+  border-bottom: 1px solid #333;
+}
+header h1 { font-size: 14px; font-weight: 500; color: #999; }
+.stats { display: flex; gap: 18px; font-size: 13px; }
+.stat { display: flex; align-items: center; gap: 6px; }
+.dot { width: 10px; height: 10px; border-radius: 50%; }
+.dot.microscope { background: #4ade80; }
+.dot.external { background: #f87171; }
+.dot.blank { background: #555; }
+
+/* ── Frame viewer ───────────────────────────────────────── */
+.viewer {
+  flex: 1; display: flex; align-items: center; justify-content: center;
+  padding: 16px; min-height: 0; position: relative;
+}
+.viewer img {
+  max-width: 100%; max-height: 100%;
+  border: 3px solid #333; border-radius: 4px;
+  object-fit: contain;
+}
+.viewer img.microscope { border-color: #4ade80; }
+.viewer img.external   { border-color: #f87171; }
+.viewer img.blank       { border-color: #555; }
+
+.frame-info {
+  position: absolute; bottom: 24px; left: 24px;
+  background: rgba(0,0,0,.75); padding: 6px 14px; border-radius: 6px;
+  font: 13px/1.4 "SF Mono", Menlo, monospace; color: #ccc;
+}
+.frame-info .cls { text-transform: uppercase; font-weight: 600; }
+.frame-info .cls.microscope { color: #4ade80; }
+.frame-info .cls.external   { color: #f87171; }
+.frame-info .cls.blank       { color: #777; }
+
+.pending-in {
+  position: absolute; top: 24px; left: 50%; transform: translateX(-50%);
+  background: #2563eb; color: white; padding: 6px 14px; border-radius: 6px;
+  font-size: 13px; font-weight: 500;
+}
+
+/* ── Bottom panel ───────────────────────────────────────── */
+.bottom { background: #1a1a1a; border-top: 1px solid #333; padding: 10px 20px 14px; }
+
+/* Timeline */
+.timeline {
+  height: 36px; background: #222; border-radius: 4px;
+  position: relative; cursor: pointer; overflow: hidden;
+}
+.timeline .seg {
+  position: absolute; top: 0; height: 100%;
+  transition: opacity .15s;
+}
+.timeline .seg.microscope { background: #4ade80; opacity: .55; }
+.timeline .seg.external   { background: #f87171; opacity: .35; }
+.timeline .seg.blank       { background: #555; opacity: .25; }
+.timeline .seg.cut { opacity: .12 !important; }
+.timeline .playhead {
+  position: absolute; top: 0; width: 2px; height: 100%;
+  background: white; z-index: 10; pointer-events: none;
+}
+.timeline .selection {
+  position: absolute; top: 0; height: 100%;
+  background: rgba(59,130,246,.25);
+  border-left: 2px solid #3b82f6; border-right: 2px solid #3b82f6;
+  z-index: 5; pointer-events: none;
+}
+
+/* Help + actions */
+.bar { display: flex; justify-content: space-between; align-items: center; margin-top: 8px; }
+.help { display: flex; gap: 14px; font-size: 12px; color: #666; flex-wrap: wrap; }
+kbd {
+  background: #333; padding: 1px 5px; border-radius: 3px;
+  font-family: "SF Mono", Menlo, monospace; font-size: 11px; color: #aaa;
+}
+.actions { display: flex; gap: 8px; }
+button {
+  padding: 7px 16px; border: none; border-radius: 5px;
+  font-size: 13px; cursor: pointer; font-weight: 500;
+}
+.btn-export { background: #2563eb; color: white; }
+.btn-export:hover { background: #1d4ed8; }
+.btn-export:disabled { background: #333; color: #666; cursor: default; }
+.btn-sec { background: #333; color: #ccc; }
+.btn-sec:hover { background: #444; }
+.btn-sec.active { background: #4b5563; color: white; }
+
+/* Loading overlay */
+.loading {
+  position: fixed; inset: 0; background: #111;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 16px; color: #999; z-index: 100;
+}
+.loading.hidden { display: none; }
+</style>
+</head>
+<body>
+
+<div class="loading" id="loading">Loading analysis...</div>
+
+<header>
+  <h1 id="title"></h1>
+  <div class="stats">
+    <div class="stat"><div class="dot microscope"></div><span id="stat-micro"></span></div>
+    <div class="stat"><div class="dot external"></div><span id="stat-ext"></span></div>
+    <div class="stat"><div class="dot blank"></div><span id="stat-blank"></span></div>
+  </div>
+</header>
+
+<div class="viewer">
+  <img id="frame" src="" alt="">
+  <div class="frame-info">
+    <span id="info-time"></span> &nbsp;
+    <span id="info-pos"></span> &nbsp;
+    <span id="info-cls" class="cls"></span>
+    <span id="info-seg"></span>
+  </div>
+  <div class="pending-in" id="pending-in" style="display:none"></div>
+</div>
+
+<div class="bottom">
+  <div class="timeline" id="timeline"></div>
+  <div class="bar">
+    <div class="help">
+      <span><kbd>&larr;</kbd><kbd>&rarr;</kbd> navigate</span>
+      <span><kbd>Shift</kbd>+arrows jump 10</span>
+      <span><kbd>Space</kbd> toggle segment</span>
+      <span><kbd>I</kbd> in-point</span>
+      <span><kbd>O</kbd> out-point</span>
+      <span><kbd>X</kbd> delete selection</span>
+      <span><kbd>F</kbd> filter</span>
+    </div>
+    <div class="actions">
+      <button class="btn-sec" id="btn-filter">Showing: keep only</button>
+      <button class="btn-export" id="btn-export">Export</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── State ────────────────────────────────────────────────────────────────────
+let data = null;          // analysis JSON
+let thumbInterval, thumbCount, duration;
+let thumbClasses = {};    // per-thumbnail classification from server
+let segments = [];        // mutable copy with .keep flag
+let selections = [];      // manual [{start, end}]
+let pendingIn = null;
+
+let showAll = false;
+let filtered = [];        // thumb indices visible in current filter mode
+let pos = 0;              // index into filtered[]
+
+// ── Init ─────────────────────────────────────────────────────────────────────
+async function init() {
+  const r = await fetch("/api/analysis");
+  data = await r.json();
+  thumbInterval = data.thumb_interval;
+  thumbCount = data.thumb_count;
+  duration = data.duration;
+  thumbClasses = data.thumb_classes || {};
+
+  // Copy segments, default keep = microscope
+  segments = data.segments.map(s => ({...s, keep: s.classification === "microscope"}));
+
+  updateFiltered();
+  renderTimeline();
+  updateStats();
+  document.getElementById("title").textContent = data.video_path.split("/").pop();
+  document.getElementById("loading").classList.add("hidden");
+  go(0);
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+function fmt(sec) {
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = Math.floor(sec % 60);
+  return h ? `${h}:${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}`
+           : `${m}:${String(s).padStart(2,"0")}`;
+}
+
+function thumbTime(n) { return (n - 1) * thumbInterval; }
+
+function segmentAt(t) { return segments.find(s => t >= s.start && t < s.end); }
+
+// Per-thumbnail classification (from pixel analysis, not segment lookup)
+function thumbCls(n) { return thumbClasses[String(n)] || "blank"; }
+
+function isKeepThumb(n) {
+  return thumbCls(n) === "microscope";
+}
+
+// ── Filtered index ───────────────────────────────────────────────────────────
+function updateFiltered() {
+  filtered = [];
+  for (let i = 1; i <= thumbCount; i++) {
+    if (showAll || isKeepThumb(i)) filtered.push(i);
+  }
+}
+
+// ── Navigation ───────────────────────────────────────────────────────────────
+function go(idx) {
+  if (!filtered.length) return;
+  pos = Math.max(0, Math.min(idx, filtered.length - 1));
+
+  const n = filtered[pos];
+  const t = thumbTime(n);
+  const cls = thumbCls(n);  // per-thumbnail classification
+  const seg = segmentAt(t);
+
+  const img = document.getElementById("frame");
+  img.src = `/api/thumb/${n}`;
+  img.className = cls;
+
+  document.getElementById("info-time").textContent = fmt(t);
+  document.getElementById("info-pos").textContent = `#${n}  ${pos + 1} / ${filtered.length}`;
+
+  const clsEl = document.getElementById("info-cls");
+  clsEl.textContent = cls;
+  clsEl.className = "cls " + cls;
+
+  const segInfo = seg ? (seg.keep ? "KEEP" : "CUT") : "";
+  document.getElementById("info-seg").textContent = segInfo ? ` [${segInfo}]` : "";
+
+  // Move playhead
+  const ph = document.querySelector(".playhead");
+  if (ph) ph.style.left = `${(t / duration) * 100}%`;
+
+  // Preload neighbors
+  for (let d = -3; d <= 3; d++) {
+    const j = pos + d;
+    if (j >= 0 && j < filtered.length && j !== pos) {
+      new Image().src = `/api/thumb/${filtered[j]}`;
+    }
+  }
+}
+
+// ── Timeline ─────────────────────────────────────────────────────────────────
+function renderTimeline() {
+  const tl = document.getElementById("timeline");
+  tl.innerHTML = "";
+
+  for (const seg of segments) {
+    const div = document.createElement("div");
+    div.className = `seg ${seg.classification}${seg.keep ? "" : " cut"}`;
+    div.style.left = `${(seg.start / duration) * 100}%`;
+    div.style.width = `${((seg.end - seg.start) / duration) * 100}%`;
+    tl.appendChild(div);
+  }
+
+  for (const sel of selections) {
+    const div = document.createElement("div");
+    div.className = "selection";
+    div.style.left = `${(sel.start / duration) * 100}%`;
+    div.style.width = `${((sel.end - sel.start) / duration) * 100}%`;
+    tl.appendChild(div);
+  }
+
+  const ph = document.createElement("div");
+  ph.className = "playhead";
+  tl.appendChild(ph);
+}
+
+// ── Stats ────────────────────────────────────────────────────────────────────
+function updateStats() {
+  const totals = {microscope: 0, external: 0, blank: 0};
+  for (const s of segments) totals[s.classification] += s.end - s.start;
+
+  document.getElementById("stat-micro").textContent =
+    `Microscope: ${fmt(totals.microscope)} (${Math.round(totals.microscope/duration*100)}%)`;
+  document.getElementById("stat-ext").textContent =
+    `External: ${fmt(totals.external)} (${Math.round(totals.external/duration*100)}%)`;
+  document.getElementById("stat-blank").textContent =
+    `Blank: ${fmt(totals.blank)} (${Math.round(totals.blank/duration*100)}%)`;
+}
+
+// ── Segment toggle ───────────────────────────────────────────────────────────
+function toggleCurrentSegment() {
+  if (!filtered.length) return;
+  const t = thumbTime(filtered[pos]);
+  const seg = segmentAt(t);
+  if (!seg) return;
+
+  seg.keep = !seg.keep;
+
+  const prevThumb = filtered[pos];
+  updateFiltered();
+  renderTimeline();
+
+  // Stay near same position
+  let best = 0, bestDist = Infinity;
+  for (let i = 0; i < filtered.length; i++) {
+    const d = Math.abs(filtered[i] - prevThumb);
+    if (d < bestDist) { bestDist = d; best = i; }
+  }
+  go(best);
+}
+
+// ── Selections (manual in/out) ───────────────────────────────────────────────
+function setIn() {
+  if (!filtered.length) return;
+  pendingIn = thumbTime(filtered[pos]);
+  const el = document.getElementById("pending-in");
+  el.textContent = `IN: ${fmt(pendingIn)}  — press O to set out-point`;
+  el.style.display = "";
+}
+
+function setOut() {
+  if (pendingIn === null || !filtered.length) return;
+  const outTime = thumbTime(filtered[pos]) + thumbInterval;
+  if (outTime <= pendingIn) return;
+
+  selections.push({start: pendingIn, end: outTime});
+  selections.sort((a, b) => a.start - b.start);
+  pendingIn = null;
+  document.getElementById("pending-in").style.display = "none";
+  renderTimeline();
+  go(pos);
+}
+
+function deleteSelection() {
+  if (!filtered.length || !selections.length) return;
+  const t = thumbTime(filtered[pos]);
+  selections = selections.filter(s => !(t >= s.start && t < s.end));
+  renderTimeline();
+  go(pos);
+}
+
+// ── Filter toggle ────────────────────────────────────────────────────────────
+function toggleFilter() {
+  showAll = !showAll;
+  const prevThumb = filtered.length ? filtered[pos] : 1;
+  updateFiltered();
+  renderTimeline();
+
+  document.getElementById("btn-filter").textContent =
+    showAll ? "Showing: all frames" : "Showing: keep only";
+  document.getElementById("btn-filter").classList.toggle("active", showAll);
+
+  let best = 0, bestDist = Infinity;
+  for (let i = 0; i < filtered.length; i++) {
+    const d = Math.abs(filtered[i] - prevThumb);
+    if (d < bestDist) { bestDist = d; best = i; }
+  }
+  go(best);
+}
+
+// ── Export ────────────────────────────────────────────────────────────────────
+async function doExport() {
+  let exportSegs;
+
+  if (selections.length) {
+    exportSegs = selections;
+  } else {
+    exportSegs = segments.filter(s => s.keep).map(s => ({start: s.start, end: s.end}));
+  }
+
+  if (!exportSegs.length) { alert("Nothing selected to export."); return; }
+
+  const totalDur = exportSegs.reduce((a, s) => a + (s.end - s.start), 0);
+  if (!confirm(
+    `Export ${exportSegs.length} segment${exportSegs.length > 1 ? "s" : ""} ` +
+    `(${fmt(totalDur)}) ?\n\nThis uses stream copy (fast, no re-encode).`
+  )) return;
+
+  const btn = document.getElementById("btn-export");
+  btn.disabled = true;
+  btn.textContent = "Exporting...";
+
+  try {
+    const r = await fetch("/api/export", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({segments: exportSegs}),
+    });
+    const result = await r.json();
+    if (result.error) {
+      alert("Export failed: " + result.error);
+    } else {
+      alert(`Done!\n\n${result.output_path}\nDuration: ${fmt(result.duration)}`);
+    }
+  } catch (e) {
+    alert("Export error: " + e);
+  }
+
+  btn.disabled = false;
+  btn.textContent = "Export";
+}
+
+// ── Keyboard ─────────────────────────────────────────────────────────────────
+document.addEventListener("keydown", e => {
+  if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
+
+  switch (e.key) {
+    case "ArrowRight": e.preventDefault(); go(pos + (e.shiftKey ? 10 : 1)); break;
+    case "ArrowLeft":  e.preventDefault(); go(pos - (e.shiftKey ? 10 : 1)); break;
+    case " ":          e.preventDefault(); toggleCurrentSegment(); break;
+    case "i": case "I": setIn(); break;
+    case "o": case "O": setOut(); break;
+    case "x": case "X": deleteSelection(); break;
+    case "f": case "F": toggleFilter(); break;
+  }
+});
+
+// ── Click handlers ───────────────────────────────────────────────────────────
+document.getElementById("timeline").addEventListener("click", e => {
+  const rect = e.currentTarget.getBoundingClientRect();
+  const targetTime = (e.clientX - rect.left) / rect.width * duration;
+
+  let best = 0, bestDist = Infinity;
+  for (let i = 0; i < filtered.length; i++) {
+    const d = Math.abs(thumbTime(filtered[i]) - targetTime);
+    if (d < bestDist) { bestDist = d; best = i; }
+  }
+  go(best);
+});
+
+document.getElementById("btn-filter").addEventListener("click", toggleFilter);
+document.getElementById("btn-export").addEventListener("click", doExport);
+
+// ── Go ───────────────────────────────────────────────────────────────────────
+init();
+</script>
+</body>
+</html>
