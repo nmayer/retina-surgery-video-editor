@@ -136,7 +136,9 @@ button {
 </div>
 
 <div class="bottom">
-  <div class="timeline" id="timeline"></div>
+  <div class="timeline" id="timeline">
+    <div class="selection" id="drag-preview" style="display:none; z-index:20; background:rgba(59,130,246,.4)"></div>
+  </div>
   <div class="bar">
     <div class="help">
       <span><kbd>&larr;</kbd><kbd>&rarr;</kbd> navigate</span>
@@ -184,6 +186,7 @@ async function init() {
   updateStats();
   document.getElementById("title").textContent = data.video_path.split("/").pop();
   document.getElementById("loading").classList.add("hidden");
+  setupTimelineDrag();
   go(0);
 }
 
@@ -255,7 +258,10 @@ function go(idx) {
 // ── Timeline ─────────────────────────────────────────────────────────────────
 function renderTimeline() {
   const tl = document.getElementById("timeline");
+  // Preserve the drag-preview element, clear everything else
+  const preview = document.getElementById("drag-preview");
   tl.innerHTML = "";
+  tl.appendChild(preview);
 
   for (const seg of segments) {
     const div = document.createElement("div");
@@ -365,11 +371,22 @@ function toggleFilter() {
 // ── Export ────────────────────────────────────────────────────────────────────
 async function doExport() {
   let exportSegs;
+  const keepSegs = segments.filter(s => s.keep).map(s => ({start: s.start, end: s.end}));
 
   if (selections.length) {
-    exportSegs = selections;
+    // Intersection: only export parts that are both in an I/O selection
+    // AND in a keep segment. This lets I/O define the broad ranges while
+    // segment keep/cut still removes micro-interruptions within them.
+    exportSegs = [];
+    for (const sel of selections) {
+      for (const seg of keepSegs) {
+        const start = Math.max(sel.start, seg.start);
+        const end = Math.min(sel.end, seg.end);
+        if (start < end) exportSegs.push({start, end});
+      }
+    }
   } else {
-    exportSegs = segments.filter(s => s.keep).map(s => ({start: s.start, end: s.end}));
+    exportSegs = keepSegs;
   }
 
   if (!exportSegs.length) { alert("Nothing selected to export."); return; }
@@ -420,20 +437,68 @@ document.addEventListener("keydown", e => {
 });
 
 // ── Click handlers ───────────────────────────────────────────────────────────
-document.getElementById("timeline").addEventListener("click", e => {
-  const rect = e.currentTarget.getBoundingClientRect();
-  const targetTime = (e.clientX - rect.left) / rect.width * duration;
-
-  let best = 0, bestDist = Infinity;
-  for (let i = 0; i < filtered.length; i++) {
-    const d = Math.abs(thumbTime(filtered[i]) - targetTime);
-    if (d < bestDist) { bestDist = d; best = i; }
-  }
-  go(best);
-});
-
 document.getElementById("btn-filter").addEventListener("click", toggleFilter);
 document.getElementById("btn-export").addEventListener("click", doExport);
+
+// ── Timeline: click to seek, drag to select ─────────────────────────────────
+let dragStart = null;
+let dragging = false;
+
+function setupTimelineDrag() {
+  const tl = document.getElementById("timeline");
+  const preview = document.getElementById("drag-preview");
+
+  function timeFromEvent(e) {
+    const rect = tl.getBoundingClientRect();
+    return Math.max(0, Math.min(duration, (e.clientX - rect.left) / rect.width * duration));
+  }
+
+  function seekTo(t) {
+    let best = 0, bestDist = Infinity;
+    for (let i = 0; i < filtered.length; i++) {
+      const d = Math.abs(thumbTime(filtered[i]) - t);
+      if (d < bestDist) { bestDist = d; best = i; }
+    }
+    go(best);
+  }
+
+  tl.addEventListener("mousedown", e => {
+    e.preventDefault();
+    dragStart = timeFromEvent(e);
+    dragging = true;
+    preview.style.display = "block";
+    preview.style.left = `${(dragStart / duration) * 100}%`;
+    preview.style.width = "0%";
+  });
+
+  document.addEventListener("mousemove", e => {
+    if (!dragging) return;
+    const t = timeFromEvent(e);
+    const lo = Math.min(dragStart, t);
+    const hi = Math.max(dragStart, t);
+    preview.style.left = `${(lo / duration) * 100}%`;
+    preview.style.width = `${((hi - lo) / duration) * 100}%`;
+  });
+
+  document.addEventListener("mouseup", e => {
+    if (!dragging) return;
+    dragging = false;
+    preview.style.display = "none";
+    const dragEnd = timeFromEvent(e);
+    const lo = Math.min(dragStart, dragEnd);
+    const hi = Math.max(dragStart, dragEnd);
+
+    if (hi - lo < duration * 0.005) {
+      seekTo(lo);
+    } else {
+      selections.push({start: lo, end: hi});
+      selections.sort((a, b) => a.start - b.start);
+      renderTimeline();
+      seekTo(lo);
+    }
+    dragStart = null;
+  });
+}
 
 // ── Go ───────────────────────────────────────────────────────────────────────
 init();

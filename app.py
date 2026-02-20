@@ -172,7 +172,7 @@ def main():
     print(f"\nStarting editor at http://localhost:{args.port}")
     print(f"  Review UI: http://localhost:{args.port}/")
     print(f"  Labeling:  http://localhost:{args.port}/label")
-    app.run(host="127.0.0.1", port=args.port, debug=False)
+    app.run(host="127.0.0.1", port=args.port, debug=True, use_reloader=False)
 
 
 if __name__ == "__main__":
