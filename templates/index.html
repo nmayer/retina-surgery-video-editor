@@ -76,6 +76,11 @@ header h1 { font-size: 14px; font-weight: 500; color: #999; }
   position: absolute; top: 0; width: 2px; height: 100%;
   background: white; z-index: 10; pointer-events: none;
 }
+.timeline .file-boundary {
+  position: absolute; top: 0; width: 1px; height: 100%;
+  border-left: 1px dashed rgba(255,255,255,.3);
+  z-index: 8; pointer-events: none;
+}
 .timeline .selection {
   position: absolute; top: 0; height: 100%;
   background: rgba(59,130,246,.25);
@@ -152,6 +157,7 @@ button {
     <div class="actions">
       <button class="btn-sec" id="btn-filter">Showing: keep only</button>
       <button class="btn-export" id="btn-export">Export</button>
+      <button class="btn-sec" onclick="if(confirm('Open a different video?'))fetch('/api/reset',{method:'POST'}).then(()=>location.href='/')">Open...</button>
     </div>
   </div>
 </div>
@@ -165,6 +171,7 @@ let segments = [];        // mutable copy with .keep flag
 let selections = [];      // manual [{start, end}]
 let pendingIn = null;
 
+let videos = [];      // [{path, duration, offset}]
 let showAll = false;
 let filtered = [];        // thumb indices visible in current filter mode
 let pos = 0;              // index into filtered[]
@@ -184,7 +191,8 @@ async function init() {
   updateFiltered();
   renderTimeline();
   updateStats();
-  document.getElementById("title").textContent = data.video_path.split("/").pop();
+  document.getElementById("title").textContent = data.video_path;
+  videos = data.videos || [];
   document.getElementById("loading").classList.add("hidden");
   setupTimelineDrag();
   go(0);
@@ -277,6 +285,16 @@ function renderTimeline() {
     div.style.left = `${(sel.start / duration) * 100}%`;
     div.style.width = `${((sel.end - sel.start) / duration) * 100}%`;
     tl.appendChild(div);
+  }
+
+  // File boundary markers (for multi-video)
+  if (videos.length > 1) {
+    for (let i = 1; i < videos.length; i++) {
+      const marker = document.createElement("div");
+      marker.className = "file-boundary";
+      marker.style.left = `${(videos[i].offset / duration) * 100}%`;
+      tl.appendChild(marker);
+    }
   }
 
   const ph = document.createElement("div");
@@ -392,20 +410,26 @@ async function doExport() {
   if (!exportSegs.length) { alert("Nothing selected to export."); return; }
 
   const totalDur = exportSegs.reduce((a, s) => a + (s.end - s.start), 0);
-  if (!confirm(
-    `Export ${exportSegs.length} segment${exportSegs.length > 1 ? "s" : ""} ` +
-    `(${fmt(totalDur)}) ?\n\nThis uses stream copy (fast, no re-encode).`
-  )) return;
+
+  // Pick save location
+  const defaultName = (data.video_path || "video") + "_edited.mp4";
+  const pickR = await fetch("/api/pick-save", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({default_name: defaultName}),
+  });
+  const pickData = await pickR.json();
+  if (pickData.cancelled) return;
 
   const btn = document.getElementById("btn-export");
   btn.disabled = true;
-  btn.textContent = "Exporting...";
+  btn.textContent = `Exporting ${fmt(totalDur)}...`;
 
   try {
     const r = await fetch("/api/export", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({segments: exportSegs}),
+      body: JSON.stringify({segments: exportSegs, output_path: pickData.path}),
     });
     const result = await r.json();
     if (result.error) {

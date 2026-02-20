@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Surgery Video Editor</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  background: #111; color: #ddd;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  height: 100vh; display: flex; align-items: center; justify-content: center;
+}
+
+.container {
+  text-align: center; max-width: 600px; width: 100%; padding: 40px;
+}
+
+h1 { font-size: 22px; font-weight: 500; color: #ccc; margin-bottom: 8px; }
+.subtitle { font-size: 14px; color: #666; margin-bottom: 40px; }
+
+.buttons { display: flex; gap: 16px; justify-content: center; margin-bottom: 32px; }
+button {
+  padding: 14px 28px; border: none; border-radius: 8px;
+  font-size: 15px; cursor: pointer; font-weight: 500;
+  transition: background .15s;
+}
+.btn-primary { background: #2563eb; color: white; }
+.btn-primary:hover { background: #1d4ed8; }
+.btn-primary:disabled { background: #333; color: #666; cursor: default; }
+.btn-secondary { background: #333; color: #ccc; }
+.btn-secondary:hover { background: #444; }
+.btn-secondary:disabled { background: #333; color: #666; cursor: default; }
+
+/* File list */
+.file-list {
+  text-align: left; background: #1a1a1a; border-radius: 8px;
+  padding: 16px; margin-bottom: 24px; display: none;
+}
+.file-list h3 { font-size: 13px; color: #999; margin-bottom: 10px; font-weight: 500; }
+.file-item {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 6px 0; font-size: 13px; border-bottom: 1px solid #222;
+}
+.file-item:last-child { border-bottom: none; }
+.file-name { color: #ddd; }
+.file-dur { color: #666; font-family: "SF Mono", Menlo, monospace; font-size: 12px; }
+.file-total {
+  margin-top: 10px; padding-top: 10px; border-top: 1px solid #333;
+  font-size: 13px; color: #999; text-align: right;
+}
+
+/* Progress */
+.progress-area { display: none; margin-bottom: 24px; }
+.progress-msg { font-size: 14px; color: #999; margin-bottom: 10px; }
+.progress-bar {
+  height: 8px; background: #333; border-radius: 4px; overflow: hidden;
+}
+.progress-fill {
+  height: 100%; background: #2563eb; border-radius: 4px;
+  transition: width .5s ease;
+  width: 0%;
+}
+.progress-pct {
+  font-size: 13px; color: #666; margin-top: 8px;
+  font-family: "SF Mono", Menlo, monospace;
+}
+
+/* Error */
+.error-msg {
+  background: #7f1d1d; color: #fca5a5; padding: 12px 16px;
+  border-radius: 8px; font-size: 13px; display: none; margin-bottom: 24px;
+}
+</style>
+</head>
+<body>
+
+<div class="container">
+  <h1>Surgery Video Editor</h1>
+  <p class="subtitle" id="subtitle">Select a video file or folder to get started</p>
+
+  <div class="error-msg" id="error"></div>
+
+  <div class="buttons" id="pick-buttons">
+    <button class="btn-primary" id="btn-files" onclick="pickFiles()">Open Video File(s)</button>
+    <button class="btn-secondary" id="btn-folder" onclick="pickFolder()">Open Folder</button>
+  </div>
+
+  <div class="file-list" id="file-list">
+    <h3 id="file-list-title"></h3>
+    <div id="file-items"></div>
+    <div class="file-total" id="file-total"></div>
+  </div>
+
+  <div class="buttons" id="start-buttons" style="display:none">
+    <button class="btn-primary" id="btn-start" onclick="startAnalysis()">Start Analysis</button>
+    <button class="btn-secondary" onclick="resetPick()">Change Selection</button>
+  </div>
+
+  <div class="progress-area" id="progress-area">
+    <div class="progress-msg" id="progress-msg">Starting analysis...</div>
+    <div class="progress-bar"><div class="progress-fill" id="progress-fill"></div></div>
+    <div class="progress-pct" id="progress-pct"></div>
+  </div>
+</div>
+
+<script>
+let selectedPaths = [];
+let pollTimer = null;
+
+function fmt(sec) {
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = Math.floor(sec % 60);
+  return h ? `${h}:${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}`
+           : `${m}:${String(s).padStart(2,"0")}`;
+}
+
+function showError(msg) {
+  const el = document.getElementById("error");
+  el.textContent = msg;
+  el.style.display = msg ? "block" : "none";
+}
+
+function disableButtons(disabled) {
+  document.getElementById("btn-files").disabled = disabled;
+  document.getElementById("btn-folder").disabled = disabled;
+}
+
+async function pickFiles() {
+  showError("");
+  disableButtons(true);
+  try {
+    const r = await fetch("/api/pick", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({mode: "file"}),
+    });
+    const data = await r.json();
+    if (data.cancelled) { disableButtons(false); return; }
+    if (data.error) { showError(data.error); disableButtons(false); return; }
+    showFiles(data.files);
+    selectedPaths = data.paths;
+  } catch (e) {
+    showError("Failed to open file picker: " + e);
+    disableButtons(false);
+  }
+}
+
+async function pickFolder() {
+  showError("");
+  disableButtons(true);
+  try {
+    const r = await fetch("/api/pick", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({mode: "folder"}),
+    });
+    const data = await r.json();
+    if (data.cancelled) { disableButtons(false); return; }
+    if (data.error) { showError(data.error); disableButtons(false); return; }
+    showFiles(data.files);
+    selectedPaths = data.paths;
+  } catch (e) {
+    showError("Failed to open folder picker: " + e);
+    disableButtons(false);
+  }
+}
+
+function showFiles(files) {
+  const list = document.getElementById("file-list");
+  const items = document.getElementById("file-items");
+  const title = document.getElementById("file-list-title");
+  const total = document.getElementById("file-total");
+
+  title.textContent = files.length === 1
+    ? "Selected file:" : `Selected ${files.length} files:`;
+
+  items.innerHTML = files.map(f =>
+    `<div class="file-item">
+       <span class="file-name">${f.name}</span>
+     </div>`
+  ).join("");
+
+  total.textContent = `${files.length} file${files.length > 1 ? "s" : ""} selected`;
+
+  list.style.display = "block";
+  document.getElementById("pick-buttons").style.display = "none";
+  document.getElementById("start-buttons").style.display = "flex";
+}
+
+function resetPick() {
+  selectedPaths = [];
+  document.getElementById("file-list").style.display = "none";
+  document.getElementById("start-buttons").style.display = "none";
+  document.getElementById("pick-buttons").style.display = "flex";
+  disableButtons(false);
+  showError("");
+}
+
+async function startAnalysis() {
+  if (!selectedPaths.length) return;
+  showError("");
+
+  document.getElementById("start-buttons").style.display = "none";
+  document.getElementById("subtitle").textContent = "Analyzing...";
+  document.getElementById("progress-area").style.display = "block";
+
+  try {
+    const r = await fetch("/api/open", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({paths: selectedPaths}),
+    });
+    const data = await r.json();
+    if (data.error) { showError(data.error); return; }
+    startPolling();
+  } catch (e) {
+    showError("Failed to start analysis: " + e);
+  }
+}
+
+function startPolling() {
+  pollTimer = setInterval(async () => {
+    try {
+      const r = await fetch("/api/status");
+      const data = await r.json();
+
+      const pct = Math.round(data.progress * 100);
+      const phase = data.phase || "";
+      const detail = data.message || "";
+      document.getElementById("progress-msg").textContent =
+        phase + (detail ? ` — ${detail}` : "");
+      document.getElementById("progress-fill").style.width = `${pct}%`;
+      document.getElementById("progress-pct").textContent = `${pct}%`;
+
+      if (data.status === "ready") {
+        clearInterval(pollTimer);
+        window.location.href = "/";
+      } else if (data.status === "error") {
+        clearInterval(pollTimer);
+        showError(data.error || "Analysis failed");
+        document.getElementById("progress-area").style.display = "none";
+        document.getElementById("start-buttons").style.display = "flex";
+      }
+    } catch (e) {
+      // ignore transient fetch errors
+    }
+  }, 1000);
+}
+
+// On page load, check if analysis is already running (e.g., from CLI arg)
+(async function checkInitialStatus() {
+  try {
+    const r = await fetch("/api/status");
+    const data = await r.json();
+    if (data.status === "analyzing") {
+      document.getElementById("pick-buttons").style.display = "none";
+      document.getElementById("subtitle").textContent = "Analyzing...";
+      document.getElementById("progress-area").style.display = "block";
+      startPolling();
+    } else if (data.status === "ready") {
+      window.location.href = "/";
+    }
+  } catch (e) {}
+})();
+</script>
+</body>
+</html>
